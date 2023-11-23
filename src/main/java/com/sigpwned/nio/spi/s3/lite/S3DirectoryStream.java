@@ -17,7 +17,7 @@ import com.sigpwned.aws.sdk.lite.s3.model.ListObjectsV2Request;
 import com.sigpwned.aws.sdk.lite.s3.model.S3Object;
 
 class S3DirectoryStream implements DirectoryStream<Path> {
-  private static final String PATH_SEPARATOR = S3FileSystem.SEPARATOR;
+  private static final String PATH_SEPARATOR = S3FileSystemProvider.SEPARATOR;
 
   private final Logger logger = LoggerFactory.getLogger(this.getClass().getName());
 

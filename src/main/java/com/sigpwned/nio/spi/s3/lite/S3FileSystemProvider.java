@@ -47,9 +47,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import com.sigpwned.aws.sdk.lite.core.credentials.provider.DefaultAwsCredentialsProviderChain;
 import com.sigpwned.aws.sdk.lite.core.io.RequestBody;
+import com.sigpwned.aws.sdk.lite.core.util.AwsRegions;
+import com.sigpwned.aws.sdk.lite.s3.S3Client;
+import com.sigpwned.aws.sdk.lite.s3.S3ClientBuilder;
 import com.sigpwned.aws.sdk.lite.s3.exception.AccessDeniedException;
 import com.sigpwned.aws.sdk.lite.s3.exception.NoSuchBucketException;
 import com.sigpwned.aws.sdk.lite.s3.exception.NoSuchKeyException;
@@ -66,10 +72,47 @@ import com.sigpwned.nio.spi.s3.lite.io.IgnoreCloseInputStream;
 import com.sigpwned.nio.spi.s3.lite.io.LimitedInputStream;
 import com.sigpwned.nio.spi.s3.lite.options.ContentTypeOpenOption;
 import com.sigpwned.nio.spi.s3.lite.options.FileLengthOpenOption;
+import com.sigpwned.nio.spi.s3.lite.util.Buckets;
 import com.sigpwned.nio.spi.s3.lite.util.MorePaths;
 import com.sigpwned.nio.spi.s3.lite.util.S3FileSystemInfo;
 
 public class S3FileSystemProvider extends FileSystemProvider {
+  private static final AtomicReference<Supplier<S3ClientBuilder<?>>> defaultClientBuilderSupplierReference =
+      new AtomicReference<>(() -> {
+        return S3Client.builder().credentialsProvider(new DefaultAwsCredentialsProviderChain())
+            .region(AwsRegions.US_EAST_1);
+      });
+
+  private static final AtomicReference<S3Client> defaultClientReference =
+      new AtomicReference<>(defaultClientBuilderSupplierReference.get().get().build());
+
+  /**
+   * Test hook
+   */
+  /* default */ static void setDefaultClientBuilderSupplier(
+      Supplier<S3ClientBuilder<?>> clientBuilderSupplier) {
+    if (clientBuilderSupplier == null)
+      throw new NullPointerException();
+    S3Client newDefaultClient = clientBuilderSupplier.get().build();
+    defaultClientBuilderSupplierReference.set(clientBuilderSupplier);
+    defaultClientReference.set(newDefaultClient);
+  }
+
+  private static S3ClientBuilder<?> defaultClientBuilder() {
+    return defaultClientBuilderSupplierReference.get().get();
+  }
+
+  private static S3Client getDefaultClient() {
+    return defaultClientReference.get();
+  }
+
+  public static final String SEPARATOR = "/";
+  public static final String SCHEME = "s3";
+
+  /**
+   * Required by SPI
+   */
+  public S3FileSystemProvider() {}
 
   @Override
   public void checkAccess(Path path, AccessMode... modes) throws IOException {
@@ -100,7 +143,7 @@ public class S3FileSystemProvider extends FileSystemProvider {
       try {
         response = s3Path.getFileSystem().getClient()
             .listObjectsV2(ListObjectsV2Request.builder().bucket(s3Path.bucketName())
-                .prefix(s3Path.getKey()).delimiter(S3FileSystem.SEPARATOR).build());
+                .prefix(s3Path.getKey()).delimiter(S3FileSystemProvider.SEPARATOR).build());
       } catch (AccessDeniedException e) {
         throw new java.nio.file.AccessDeniedException(s3Path.toString());
       }
@@ -173,8 +216,8 @@ public class S3FileSystemProvider extends FileSystemProvider {
     }
 
     String s3Key = s3Path.toRealPath(NOFOLLOW_LINKS).getKey();
-    if (!s3Key.endsWith(S3FileSystem.SEPARATOR) && !s3Key.isEmpty()) {
-      s3Key = s3Key + S3FileSystem.SEPARATOR;
+    if (!s3Key.endsWith(S3FileSystemProvider.SEPARATOR) && !s3Key.isEmpty()) {
+      s3Key = s3Key + S3FileSystemProvider.SEPARATOR;
     }
 
     s3Path.getFileSystem().getClient().putObject(
@@ -217,16 +260,14 @@ public class S3FileSystemProvider extends FileSystemProvider {
     S3FileSystemInfo info = S3FileSystemInfo.fromUri(uri);
     return FS_CACHE.computeIfAbsent(info.key(), (key) -> {
       if (!create) {
-        throw new FileSystemNotFoundException("file system not found for '" + info.key() + "'");
+        throw new FileSystemNotFoundException(uri.toString());
       }
 
-      S3NioSpiConfiguration config =
-          new S3NioSpiConfiguration().withEndpoint(info.endpoint()).withBucketName(info.bucket());
-      if (info.accessKey() != null) {
-        config.withCredentials(info.accessKey(), info.accessSecret());
-      }
+      String region = Buckets.getBucketRegion(getDefaultClient(), info.bucket());
 
-      return new S3FileSystem(this, config);
+      S3Client client = defaultClientBuilder().region(region).build();
+
+      return new S3FileSystem(this, client, info.bucket());
     });
   }
 
@@ -239,7 +280,7 @@ public class S3FileSystemProvider extends FileSystemProvider {
 
   @Override
   public String getScheme() {
-    return S3FileSystem.SCHEME;
+    return S3FileSystemProvider.SCHEME;
   }
 
   @Override
@@ -359,6 +400,7 @@ public class S3FileSystemProvider extends FileSystemProvider {
         try (PushbackInputStream pin = new PushbackInputStream(in, 1)) {
           if (b0 != -1)
             pin.unread(b0);
+          @SuppressWarnings("unused")
           PutObjectResponse response = target.getFileSystem().getClient().putObject(
               PutObjectRequest.builder().bucket(target.bucketName()).key(target.getKey()).build(),
               new RequestBody(contentLength, contentType, () -> {
@@ -384,6 +426,8 @@ public class S3FileSystemProvider extends FileSystemProvider {
           MoreByteStreams.drain(xin, membuf);
         }
 
+        // TODO Should we check anything in the PutObject response?
+        @SuppressWarnings("unused")
         PutObjectResponse response;
         try {
           RequestBody body;
@@ -547,5 +591,4 @@ public class S3FileSystemProvider extends FileSystemProvider {
         .map(attr -> attr.replaceAll("^basic:", "")).collect(Collectors.toSet());
     return attrSet::contains;
   }
-
 }

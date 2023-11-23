@@ -11,33 +11,31 @@ import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.UserPrincipalLookupService;
-import java.nio.file.spi.FileSystemProvider;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Set;
 import com.sigpwned.aws.sdk.lite.s3.S3Client;
 
 public class S3FileSystem extends FileSystem {
-  public static final String SCHEME = "s3";
-
-  public static final String SEPARATOR = "/";
-
   private final S3FileSystemProvider provider;
-  private final S3NioSpiConfiguration configuration;
+  private final S3Client client;
+  private final String bucketName;
   private final Set<Closeable> openCloseables;
   private boolean open;
 
-  public S3FileSystem(S3FileSystemProvider provider, S3NioSpiConfiguration configuration) {
+  public S3FileSystem(S3FileSystemProvider provider, S3Client client, String bucketName) {
     this.provider = requireNonNull(provider);
-    this.configuration = requireNonNull(configuration);
+    this.client = requireNonNull(client);
+    this.bucketName = requireNonNull(bucketName);
     this.openCloseables = Collections.newSetFromMap(new IdentityHashMap<Closeable, Boolean>());
     this.open = true;
   }
 
   @Override
   public void close() throws IOException {
-    // TODO Auto-generated method stub
-
+    open = false;
+    for (Closeable closeable : openCloseables)
+      closeable.close();
   }
 
   @Override
@@ -52,8 +50,7 @@ public class S3FileSystem extends FileSystem {
 
   @Override
   public PathMatcher getPathMatcher(String syntaxAndPattern) {
-    // TODO this assumes the JDK will be on a system where path matching of the default filesystem
-    // is Posix like.
+    // TODO this assumes the underlying platform's filesystem is POSIX-like
     return FileSystems.getDefault().getPathMatcher(syntaxAndPattern);
   }
 
@@ -64,7 +61,7 @@ public class S3FileSystem extends FileSystem {
 
   @Override
   public String getSeparator() {
-    return SEPARATOR;
+    return S3FileSystemProvider.SEPARATOR;
   }
 
   @Override
@@ -78,7 +75,7 @@ public class S3FileSystem extends FileSystem {
   }
 
   @Override
-  public FileSystemProvider provider() {
+  public S3FileSystemProvider provider() {
     return provider;
   }
 
@@ -113,16 +110,11 @@ public class S3FileSystem extends FileSystem {
     openCloseables.remove(openCloseable);
   }
 
-  public S3NioSpiConfiguration configuration() {
-    return configuration;
-  }
-
-  public String bucketName() {
-    return configuration().getBucketName();
+  public String getBucketName() {
+    return bucketName;
   }
 
   /* default */ S3Client getClient() {
-    // TODO I'm pretty sure we'll need to at least detect regions here
-    return S3Client.builder().build();
+    return client;
   }
 }

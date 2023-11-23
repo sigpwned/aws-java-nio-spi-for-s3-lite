@@ -24,7 +24,7 @@ import java.util.stream.Collectors;
  * Borrowed with love from awslabs/aws-java-nio-spi-for-s3.
  */
 class PosixLikePathRepresentation {
-  private static final String PATH_SEPARATOR = S3FileSystem.SEPARATOR;
+  private static final String PATH_SEPARATOR = S3FileSystemProvider.SEPARATOR;
   static final PosixLikePathRepresentation ROOT = new PosixLikePathRepresentation(PATH_SEPARATOR);
   static final PosixLikePathRepresentation EMPTY_PATH = new PosixLikePathRepresentation("");
   private static final char PATH_SEPARATOR_CHAR = PATH_SEPARATOR.charAt(0);

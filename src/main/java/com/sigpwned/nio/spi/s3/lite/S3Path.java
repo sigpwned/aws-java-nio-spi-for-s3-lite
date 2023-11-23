@@ -23,7 +23,6 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
-import com.sigpwned.aws.sdk.lite.core.credentials.AwsCredentials;
 import com.sigpwned.nio.spi.s3.lite.util.MorePaths;
 import com.sigpwned.nio.spi.s3.lite.util.UrlEncoding;
 
@@ -31,7 +30,7 @@ import com.sigpwned.nio.spi.s3.lite.util.UrlEncoding;
  * Borrowed with love from awslabs/aws-java-nio-spi-for-s3.
  */
 public class S3Path implements Path {
-  private static final String PATH_SEPARATOR = S3FileSystem.SEPARATOR;
+  private static final String PATH_SEPARATOR = S3FileSystemProvider.SEPARATOR;
 
   private final S3FileSystem fileSystem;
   private final PosixLikePathRepresentation pathRepresentation;
@@ -80,8 +79,6 @@ public class S3Path implements Path {
       throw new IllegalArgumentException("first element of the path may not be null");
     }
 
-    S3NioSpiConfiguration configuration = fsForBucket.configuration();
-
     first = first.trim();
 
     if (first.isEmpty() && !(more == null || more.length == 0)) {
@@ -89,12 +86,14 @@ public class S3Path implements Path {
           "The first element of the path may not be empty when more exists");
     }
 
+    // S3NioSpiConfiguration configuration = fsForBucket.configuration();
+
     String scheme = fsForBucket.provider().getScheme();
     if (first.startsWith(scheme + ":/")) {
       first = removeScheme(first, scheme);
-      first = removeCredentials(first, configuration);
-      first = removeEndpoint(first, configuration.getEndpoint());
-      first = removeBucket(first, configuration.getBucketName());
+      // first = removeCredentials(first, configuration);
+      // first = removeEndpoint(first, configuration.getEndpoint());
+      // first = removeBucket(first, configuration.getBucketName());
     }
 
     return new S3Path(fsForBucket, PosixLikePathRepresentation.of(first, more));
@@ -657,10 +656,10 @@ public class S3Path implements Path {
     Iterator<Path> elements = path.iterator();
 
     StringBuilder uri = new StringBuilder(fileSystem.provider().getScheme() + "://");
-    String endpoint = fileSystem.configuration().getEndpoint();
-    if (!endpoint.isEmpty()) {
-      uri.append(fileSystem.configuration().getEndpoint()).append(PATH_SEPARATOR);
-    }
+    // String endpoint = fileSystem.configuration().getEndpoint();
+    // if (!endpoint.isEmpty()) {
+    // uri.append(fileSystem.configuration().getEndpoint()).append(PATH_SEPARATOR);
+    // }
     uri.append(bucketName());
     elements.forEachRemaining((e) -> {
       String name = e.getFileName().toString();
@@ -849,7 +848,7 @@ public class S3Path implements Path {
    * @return the bucketName, equivalent to <code>getFileSystem().bucketName()</code>
    */
   String bucketName() {
-    return fileSystem.bucketName();
+    return fileSystem.getBucketName();
   }
 
   /**
@@ -922,28 +921,33 @@ public class S3Path implements Path {
     return path.substring(scheme.length() + 2);
   }
 
-  private static String removeCredentials(String first, S3NioSpiConfiguration configuration) {
-    if (configuration.getCredentials() != null) {
-      AwsCredentials credentials = configuration.getCredentials();
-      String credentialsAsString = credentials.accessKeyId() + ':' + credentials.secretAccessKey();
-      if (first.startsWith('/' + credentialsAsString)) {
-        first = PATH_SEPARATOR + first.substring(credentialsAsString.length() + 2);
-      }
-    }
-    return first;
-  }
-
-  private static String removeEndpoint(String first, String endpoint) {
-    if (!endpoint.isEmpty() && first.startsWith(PATH_SEPARATOR + endpoint)) {
-      first = first.substring(endpoint.length() + 1);
-    }
-    return first;
-  }
-
-  private static String removeBucket(String first, String part) {
-    if (first.startsWith(PATH_SEPARATOR + part)) {
-      first = first.substring(part.length() + 1);
-    }
-    return first;
-  }
+  // private static String removeCredentials(String first, S3NioSpiConfiguration configuration) {
+  // if (configuration.getCredentials() != null) {
+  // // TODO Should this remove all credentials, even if they don't match current credentials?
+  // AwsCredentials credentials = configuration.getCredentials().resolveCredentials();
+  // if (credentials instanceof AwsBasicCredentials) {
+  // AwsBasicCredentials basicCredentials = (AwsBasicCredentials) credentials;
+  // String credentialsAsString =
+  // basicCredentials.accessKeyId() + ':' + basicCredentials.secretAccessKey();
+  // if (first.startsWith('/' + credentialsAsString)) {
+  // first = PATH_SEPARATOR + first.substring(credentialsAsString.length() + 2);
+  // }
+  // }
+  // }
+  // return first;
+  // }
+  //
+  // private static String removeEndpoint(String first, String endpoint) {
+  // if (!endpoint.isEmpty() && first.startsWith(PATH_SEPARATOR + endpoint)) {
+  // first = first.substring(endpoint.length() + 1);
+  // }
+  // return first;
+  // }
+  //
+  // private static String removeBucket(String first, String part) {
+  // if (first.startsWith(PATH_SEPARATOR + part)) {
+  // first = first.substring(part.length() + 1);
+  // }
+  // return first;
+  // }
 }
