@@ -6,15 +6,11 @@ import static java.util.Collections.emptyMap;
 import static java.util.Collections.unmodifiableMap;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.FilterInputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
@@ -44,9 +40,9 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
-import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -68,8 +64,6 @@ import com.sigpwned.aws.sdk.lite.s3.model.ListObjectsV2Response;
 import com.sigpwned.aws.sdk.lite.s3.model.PutObjectRequest;
 import com.sigpwned.aws.sdk.lite.s3.model.PutObjectResponse;
 import com.sigpwned.httpmodel.core.util.MoreByteStreams;
-import com.sigpwned.nio.spi.s3.lite.io.IgnoreCloseInputStream;
-import com.sigpwned.nio.spi.s3.lite.io.LimitedInputStream;
 import com.sigpwned.nio.spi.s3.lite.options.ContentTypeOpenOption;
 import com.sigpwned.nio.spi.s3.lite.options.FileLengthOpenOption;
 import com.sigpwned.nio.spi.s3.lite.util.Buckets;
@@ -86,6 +80,8 @@ public class S3FileSystemProvider extends FileSystemProvider {
   private static final AtomicReference<S3Client> defaultClientReference =
       new AtomicReference<>(defaultClientBuilderSupplierReference.get().get().build());
 
+  private static final Map<String, S3FileSystem> FS_CACHE = new HashMap<>();
+
   /**
    * Test hook
    */
@@ -96,6 +92,7 @@ public class S3FileSystemProvider extends FileSystemProvider {
     S3Client newDefaultClient = clientBuilderSupplier.get().build();
     defaultClientBuilderSupplierReference.set(clientBuilderSupplier);
     defaultClientReference.set(newDefaultClient);
+    FS_CACHE.clear();
   }
 
   private static S3ClientBuilder<?> defaultClientBuilder() {
@@ -128,7 +125,6 @@ public class S3FileSystemProvider extends FileSystemProvider {
 
     final S3Path s3Path = requireNonNull(MorePaths.toS3Path(path.toRealPath(NOFOLLOW_LINKS)));
 
-    Object result;
     if (s3Path.equals(s3Path.getRoot())) {
       try {
         s3Path.getFileSystem().getClient()
@@ -182,11 +178,14 @@ public class S3FileSystemProvider extends FileSystemProvider {
       throw new IllegalArgumentException("cannot copy directory");
     }
     if (s3Target.isDirectory()) {
-      s3Target = s3Target.resolve(s3Source.getFileName().getName(0));
+      s3Target = s3Target
+          .resolve(s3Source.getFileName().getName(s3Source.getFileName().getNameCount() - 1));
     }
 
-    boolean targetExists = exists(s3Target);
-    if (targetExists && !asList(options).contains(StandardCopyOption.REPLACE_EXISTING)) {
+    if (asList(options).contains(StandardCopyOption.REPLACE_EXISTING)) {
+      // I don't care if the target exists or not
+    } else if (exists(s3Target)) {
+      // The target exists, and I'm not allowed to replace it.
       throw new FileAlreadyExistsException(s3Target.toString());
     }
 
@@ -242,8 +241,6 @@ public class S3FileSystemProvider extends FileSystemProvider {
   public FileSystem getFileSystem(URI uri) {
     return getFileSystem(uri, false);
   }
-
-  private Map<String, S3FileSystem> FS_CACHE = new HashMap<>();
 
   /**
    * Similar to getFileSystem(uri), but it allows to create the file system if not yet created.
@@ -316,6 +313,9 @@ public class S3FileSystemProvider extends FileSystemProvider {
    */
   @Override
   public void move(Path source, Path target, CopyOption... options) throws IOException {
+    if (asList(options).contains(StandardCopyOption.ATOMIC_MOVE)) {
+      throw new UnsupportedOperationException("S3 filesystem moves are not atomic");
+    }
     copy(source, target, options);
     delete(source);
   }
@@ -331,11 +331,11 @@ public class S3FileSystemProvider extends FileSystemProvider {
         try {
           super.close();
         } finally {
-          s3Path.getFileSystem().deregisterOpenCloseable(this);
+          s3Path.getFileSystem().deregisterCloseable(this);
         }
       }
     };
-    s3Path.getFileSystem().registerOpenCloseable(result);
+    s3Path.getFileSystem().registerCloseable(result);
     return result;
   }
 
@@ -343,36 +343,32 @@ public class S3FileSystemProvider extends FileSystemProvider {
   public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
     S3Path s3Path = requireNonNull(MorePaths.toS3Path(path));
 
-    final OptionalLong maybeContentLength;
+    final Long maybeContentLength;
     if (options != null) {
       maybeContentLength = Arrays.stream(options).filter(o -> o instanceof FileLengthOpenOption)
-          .map(o -> (FileLengthOpenOption) o).mapToLong(FileLengthOpenOption::getLength)
-          .findFirst();
+          .map(o -> (FileLengthOpenOption) o).map(FileLengthOpenOption::getLength).findFirst()
+          .orElse(null);
     } else {
-      maybeContentLength = OptionalLong.empty();
+      maybeContentLength = null;
     }
 
-    final Optional<String> maybeContentType;
+    final String maybeContentType;
     if (options != null) {
       maybeContentType = Arrays.stream(options).filter(o -> o instanceof ContentTypeOpenOption)
           .map(o -> (ContentTypeOpenOption) o).map(ContentTypeOpenOption::getContentType)
-          .findFirst();
+          .findFirst().orElse(null);
     } else {
-      maybeContentType = Optional.empty();
+      maybeContentType = null;
     }
 
     PipedInputStream in = new PipedInputStream();
     PipedOutputStream out = new PipedOutputStream();
     in.connect(out);
 
-    Runnable worker;
-    if (maybeContentLength.isPresent()) {
-      worker = newUnbufferedOutputStream(in, s3Path, maybeContentType.orElse(null),
-          maybeContentLength.getAsLong());
+    CountDownLatch latch = new CountDownLatch(1);
 
-    } else {
-      worker = newBufferedOutputStream(in, s3Path, maybeContentType.orElse(null));
-    }
+    Runnable worker =
+        newOutputStreamWriter(in, s3Path, maybeContentType, maybeContentLength, latch);
 
     new Thread(worker).start();
 
@@ -382,81 +378,45 @@ public class S3FileSystemProvider extends FileSystemProvider {
         try {
           super.close();
         } finally {
-          s3Path.getFileSystem().deregisterOpenCloseable(this);
+          s3Path.getFileSystem().deregisterCloseable(this);
+          try {
+            latch.await();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedIOException();
+          }
         }
       }
     };
 
-    s3Path.getFileSystem().registerOpenCloseable(result);
+    s3Path.getFileSystem().registerCloseable(result);
 
     return result;
   }
 
-  private Runnable newUnbufferedOutputStream(InputStream in, S3Path target, String contentType,
-      long contentLength) {
+  // TODO We now buffer in the bean mapper. What should we do here?
+  private Runnable newOutputStreamWriter(InputStream in, S3Path target, String contentType,
+      Long contentLength, CountDownLatch latch) {
     return () -> {
       try {
         int b0 = in.read();
         try (PushbackInputStream pin = new PushbackInputStream(in, 1)) {
           if (b0 != -1)
             pin.unread(b0);
+          final AtomicBoolean read = new AtomicBoolean(false);
           @SuppressWarnings("unused")
           PutObjectResponse response = target.getFileSystem().getClient().putObject(
               PutObjectRequest.builder().bucket(target.bucketName()).key(target.getKey()).build(),
               new RequestBody(contentLength, contentType, () -> {
-                return in;
+                if (read.getAndSet(true) == true)
+                  throw new IOException("already opened");
+                return pin;
               }));
-          // TODO Should we check anything on PutObjectResponse?
         }
       } catch (Exception e) {
         e.printStackTrace();
-      }
-    };
-  }
-
-  private static final int MAX_MEM_BUFFER_SIZE = 5 * 1024 * 1024;
-
-  private Runnable newBufferedOutputStream(InputStream in, S3Path target, String contentType) {
-    return () -> {
-      try {
-        // TODO Let's avoid having up to double mem buffer size due to copy
-        ByteArrayOutputStream membuf = new ByteArrayOutputStream();
-        try (InputStream xin =
-            new IgnoreCloseInputStream(new LimitedInputStream(in, MAX_MEM_BUFFER_SIZE))) {
-          MoreByteStreams.drain(xin, membuf);
-        }
-
-        // TODO Should we check anything in the PutObject response?
-        @SuppressWarnings("unused")
-        PutObjectResponse response;
-        try {
-          RequestBody body;
-          if (membuf.size() < MAX_MEM_BUFFER_SIZE) {
-            final long contentLength = membuf.size();
-            body = new RequestBody(contentLength, contentType,
-                () -> new ByteArrayInputStream(membuf.toByteArray()));
-          } else {
-            // Welp, that's a file buffer.
-            File tmp = File.createTempFile("s3.", ".buf");
-            try (OutputStream xout = new FileOutputStream(tmp)) {
-              xout.write(membuf.toByteArray());
-              MoreByteStreams.drain(in, xout);
-            }
-
-            // TODO When do we clean up tmp?
-            final long contentLength = tmp.length();
-            body = new RequestBody(contentLength, contentType, () -> new FileInputStream(tmp));
-          }
-          response = target.getFileSystem().getClient().putObject(
-              PutObjectRequest.builder().bucket(target.bucketName()).key(target.getKey()).build(),
-              body);
-        } finally {
-          in.close();
-        }
-
-        // TODO Anything to do with response?
-      } catch (Exception e) {
-        e.printStackTrace();
+      } finally {
+        latch.countDown();
       }
     };
   }

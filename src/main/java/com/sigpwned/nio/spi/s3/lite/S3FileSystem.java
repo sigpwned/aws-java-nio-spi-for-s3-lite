@@ -11,6 +11,8 @@ import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.UserPrincipalLookupService;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Set;
@@ -20,22 +22,44 @@ public class S3FileSystem extends FileSystem {
   private final S3FileSystemProvider provider;
   private final S3Client client;
   private final String bucketName;
-  private final Set<Closeable> openCloseables;
+  private final Set<Closeable> closeables;
   private boolean open;
 
   public S3FileSystem(S3FileSystemProvider provider, S3Client client, String bucketName) {
     this.provider = requireNonNull(provider);
     this.client = requireNonNull(client);
     this.bucketName = requireNonNull(bucketName);
-    this.openCloseables = Collections.newSetFromMap(new IdentityHashMap<Closeable, Boolean>());
+    this.closeables = Collections.newSetFromMap(new IdentityHashMap<Closeable, Boolean>());
     this.open = true;
   }
 
   @Override
   public void close() throws IOException {
     open = false;
-    for (Closeable closeable : openCloseables)
-      closeable.close();
+
+    Collection<Closeable> cs = new ArrayList<>();
+    synchronized (closeables) {
+      cs.addAll(closeables);
+      closeables.clear();
+    }
+
+    Exception problem = null;
+    for (Closeable closeable : cs) {
+      try {
+        closeable.close();
+      } catch (Exception e) {
+        problem = e;
+      }
+    }
+    if (problem != null) {
+      if (problem instanceof IOException) {
+        throw (IOException) problem;
+      } else if (problem instanceof RuntimeException) {
+        throw (RuntimeException) problem;
+      } else {
+        throw new IOException("Failed to close stream", problem);
+      }
+    }
   }
 
   @Override
@@ -102,12 +126,16 @@ public class S3FileSystem extends FileSystem {
     throw new UnsupportedOperationException();
   }
 
-  /* default */ void registerOpenCloseable(Closeable openCloseable) {
-    openCloseables.add(openCloseable);
+  /* default */ void registerCloseable(Closeable openCloseable) {
+    synchronized (closeables) {
+      closeables.add(openCloseable);
+    }
   }
 
-  /* default */ void deregisterOpenCloseable(Closeable openCloseable) {
-    openCloseables.remove(openCloseable);
+  /* default */ void deregisterCloseable(Closeable openCloseable) {
+    synchronized (closeables) {
+      closeables.remove(openCloseable);
+    }
   }
 
   public String getBucketName() {

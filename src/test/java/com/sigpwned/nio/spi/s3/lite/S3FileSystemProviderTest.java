@@ -5,6 +5,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -22,6 +23,7 @@ import com.sigpwned.aws.sdk.lite.core.io.RequestBody;
 import com.sigpwned.aws.sdk.lite.s3.S3Client;
 import com.sigpwned.aws.sdk.lite.s3.S3ClientBuilder;
 import com.sigpwned.aws.sdk.lite.s3.model.CreateBucketRequest;
+import com.sigpwned.aws.sdk.lite.s3.model.GetObjectRequest;
 import com.sigpwned.aws.sdk.lite.s3.model.PutObjectRequest;
 import com.sigpwned.httpmodel.core.util.MoreByteStreams;
 
@@ -74,6 +76,28 @@ public class S3FileSystemProviderTest {
       text = new String(MoreByteStreams.toByteArray(in), StandardCharsets.UTF_8);
     }
 
-    assertThat(text, is("Hello, world!"));
+    assertThat(text, is(contents));
+  }
+
+  @Test
+  public void writeTest() throws IOException {
+    final String bucketName = "example";
+    final String key = "hello.txt";
+    final String contents = "Hello, world!";
+
+    client.createBucket(CreateBucketRequest.builder().bucket(bucketName).build());
+
+    try (OutputStream out = Files.newOutputStream(Paths
+        .get(URI.create(format("%s://%s/%s", S3FileSystemProvider.SCHEME, bucketName, key))))) {
+      out.write(contents.getBytes(StandardCharsets.UTF_8));
+    }
+
+    String text;
+    try (InputStream in =
+        client.getObject(GetObjectRequest.builder().bucket(bucketName).key(key).build())) {
+      text = new String(MoreByteStreams.toByteArray(in), StandardCharsets.UTF_8);
+    }
+
+    assertThat(text, is(contents));
   }
 }
