@@ -22,8 +22,10 @@ import com.sigpwned.aws.sdk.lite.core.credentials.AwsCredentials;
 import com.sigpwned.aws.sdk.lite.core.io.RequestBody;
 import com.sigpwned.aws.sdk.lite.s3.S3Client;
 import com.sigpwned.aws.sdk.lite.s3.S3ClientBuilder;
+import com.sigpwned.aws.sdk.lite.s3.exception.NoSuchKeyException;
 import com.sigpwned.aws.sdk.lite.s3.model.CreateBucketRequest;
 import com.sigpwned.aws.sdk.lite.s3.model.GetObjectRequest;
+import com.sigpwned.aws.sdk.lite.s3.model.HeadObjectRequest;
 import com.sigpwned.aws.sdk.lite.s3.model.PutObjectRequest;
 import com.sigpwned.httpmodel.core.util.MoreByteStreams;
 
@@ -99,5 +101,59 @@ public class S3FileSystemProviderTest {
     }
 
     assertThat(text, is(contents));
+  }
+
+  // TODO create file target exists test
+  // TODO create file target not exists test
+  // TODO truncate write
+  // TODO append write target exists test
+  // TODO append write target not exists test
+
+  @Test
+  public void copyTest() throws IOException {
+    final String bucketName = "example";
+    final String key1 = "hello.txt";
+    final String key2 = "world.txt";
+    final String contents = "Hello, world!";
+
+    client.createBucket(CreateBucketRequest.builder().bucket(bucketName).build());
+
+    client.putObject(PutObjectRequest.builder().bucket(bucketName).key(key1).build(),
+        RequestBody.fromString(contents, StandardCharsets.UTF_8));
+
+    Files.copy(
+        Paths.get(URI.create(format("%s://%s/%s", S3FileSystemProvider.SCHEME, bucketName, key1))),
+        Paths.get(URI.create(format("%s://%s/%s", S3FileSystemProvider.SCHEME, bucketName, key2))));
+
+    String text;
+    try (InputStream in =
+        client.getObject(GetObjectRequest.builder().bucket(bucketName).key(key2).build())) {
+      text = new String(MoreByteStreams.toByteArray(in), StandardCharsets.UTF_8);
+    }
+
+    assertThat(text, is(contents));
+  }
+
+  @Test(expected = NoSuchKeyException.class)
+  public void deleteTest() throws IOException {
+    final String bucketName = "example";
+    final String key = "hello.txt";
+    final String contents = "Hello, world!";
+
+    client.createBucket(CreateBucketRequest.builder().bucket(bucketName).build());
+
+    client.putObject(PutObjectRequest.builder().bucket(bucketName).key(key).build(),
+        RequestBody.fromString(contents, StandardCharsets.UTF_8));
+
+    try {
+      client.headObject(HeadObjectRequest.builder().bucket(bucketName).key(key).build());
+    } catch (NoSuchKeyException e) {
+      throw new IOException("file not created", e);
+    }
+
+    Files.delete(
+        Paths.get(URI.create(format("%s://%s/%s", S3FileSystemProvider.SCHEME, bucketName, key))));
+
+    client.headObject(HeadObjectRequest.builder().bucket(bucketName).key(key).build());
   }
 }

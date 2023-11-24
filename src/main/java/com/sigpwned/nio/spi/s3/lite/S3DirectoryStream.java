@@ -6,12 +6,14 @@
 package com.sigpwned.nio.spi.s3.lite;
 
 import java.io.IOException;
+import java.nio.file.ClosedDirectoryStreamException;
+import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Path;
 import java.util.Iterator;
+import java.util.Spliterator;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import com.sigpwned.aws.sdk.lite.s3.model.CommonPrefix;
 import com.sigpwned.aws.sdk.lite.s3.model.ListObjectsV2Request;
 import com.sigpwned.aws.sdk.lite.s3.model.S3Object;
@@ -19,9 +21,8 @@ import com.sigpwned.aws.sdk.lite.s3.model.S3Object;
 class S3DirectoryStream implements DirectoryStream<Path> {
   private static final String PATH_SEPARATOR = S3FileSystemProvider.SEPARATOR;
 
-  private final Logger logger = LoggerFactory.getLogger(this.getClass().getName());
-
   private Iterator<Path> iterator;
+  private boolean open;
 
   S3DirectoryStream(S3Path path, Filter<? super Path> filter) {
     final S3FileSystem fileSystem = path.getFileSystem();
@@ -45,17 +46,36 @@ class S3DirectoryStream implements DirectoryStream<Path> {
   }
 
   @Override
+  public void forEach(Consumer<? super Path> action) {
+    if (open == false)
+      throw new ClosedDirectoryStreamException();
+    DirectoryStream.super.forEach(action);
+  }
+
+  @Override
+  public Spliterator<Path> spliterator() {
+    if (open == false)
+      throw new ClosedDirectoryStreamException();
+    return DirectoryStream.super.spliterator();
+  }
+
+  @Override
   public Iterator<Path> iterator() {
     // Only allow one call to iterator, per the docs
     if (iterator == null)
       throw new IllegalStateException();
+    if (open == false)
+      throw new ClosedDirectoryStreamException();
     Iterator<Path> result = iterator;
     iterator = null;
     return result;
   }
 
   @Override
-  public void close() {}
+  public void close() {
+    iterator = null;
+    open = false;
+  }
 
   private static boolean isEqualToParent(String finalDirName, S3Path p) {
     return p.getKey().equals(finalDirName);
@@ -65,10 +85,7 @@ class S3DirectoryStream implements DirectoryStream<Path> {
     try {
       return filter.accept(path);
     } catch (IOException e) {
-      logger.warn("An IOException was thrown while filtering the path: {}."
-          + " Set log level to debug to show stack trace", path);
-      logger.debug(e.getMessage(), e);
-      return false;
+      throw new DirectoryIteratorException(e);
     }
   }
 }

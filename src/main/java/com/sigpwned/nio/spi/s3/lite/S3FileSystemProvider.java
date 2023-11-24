@@ -18,6 +18,7 @@ import java.io.PushbackInputStream;
 import java.net.URI;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessMode;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.CopyOption;
 import java.nio.file.DirectoryStream;
 import java.nio.file.DirectoryStream.Filter;
@@ -28,21 +29,28 @@ import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -80,6 +88,25 @@ public class S3FileSystemProvider extends FileSystemProvider {
   private static final AtomicReference<S3Client> defaultClientReference =
       new AtomicReference<>(defaultClientBuilderSupplierReference.get().get().build());
 
+  private static final AtomicReference<Executor> executorReference =
+      new AtomicReference<>(Executors.newCachedThreadPool(new ThreadFactory() {
+        private final AtomicInteger count = new AtomicInteger(1);
+
+        @Override
+        public Thread newThread(Runnable runnable) {
+          return new Thread(runnable, "s3-filesystem-writer-" + count.getAndIncrement());
+        }
+      }));
+
+  public static void setExecutor(Executor newExecutor) {
+    executorReference.getAndSet(newExecutor);
+  }
+
+  /* default */ Executor getExecutor() {
+    return executorReference.get();
+  }
+
+  // TODO We should probably synchronize this
   private static final Map<String, S3FileSystem> FS_CACHE = new HashMap<>();
 
   /**
@@ -166,16 +193,16 @@ public class S3FileSystemProvider extends FileSystemProvider {
 
   @Override
   public void copy(Path source, Path target, CopyOption... options) throws IOException {
-    // If both paths point to the same object, this is a NOP
-    if (isSameFile(source, target)) {
-      return;
-    }
-
     S3Path s3Source = requireNonNull(MorePaths.toS3Path(source));
     S3Path s3Target = requireNonNull(MorePaths.toS3Path(target));
 
+    // If both paths point to the same object, this is a NOP
+    if (isSameFile(s3Source, s3Target)) {
+      return;
+    }
+
     if (s3Source.isDirectory()) {
-      throw new IllegalArgumentException("cannot copy directory");
+      throw new IllegalArgumentException("Do not support copying directories");
     }
     if (s3Target.isDirectory()) {
       s3Target = s3Target
@@ -209,12 +236,19 @@ public class S3FileSystemProvider extends FileSystemProvider {
 
   @Override
   public void createDirectory(Path path, FileAttribute<?>... attrs) throws IOException {
+    if (attrs == null)
+      attrs = new FileAttribute<?>[0];
+    if (attrs.length != 0)
+      throw new UnsupportedOperationException("S3 does not support attributes");
+
     S3Path s3Path = requireNonNull(MorePaths.toS3Path(path));
     if (s3Path.toString().equals("/") || s3Path.toString().isEmpty()) {
       throw new FileAlreadyExistsException("Root directory already exists");
     }
 
-    String s3Key = s3Path.toRealPath(NOFOLLOW_LINKS).getKey();
+    S3Path s3RealPath = s3Path.toRealPath(NOFOLLOW_LINKS);
+
+    String s3Key = s3RealPath.getKey();
     if (!s3Key.endsWith(S3FileSystemProvider.SEPARATOR) && !s3Key.isEmpty()) {
       s3Key = s3Key + S3FileSystemProvider.SEPARATOR;
     }
@@ -224,8 +258,13 @@ public class S3FileSystemProvider extends FileSystemProvider {
         RequestBody.empty());
   }
 
+  /**
+   * Does not fail if object does not exist. Does nothing if file is a directory and is not empty.
+   */
   @Override
   public void delete(Path path) throws IOException {
+    // TODO Fail if object does not exist?
+    // TODO Fail if a directory and not empty?
     S3Path s3Path = requireNonNull(MorePaths.toS3Path(path));
     s3Path.getFileSystem().getClient().deleteObject(
         DeleteObjectRequest.builder().bucket(s3Path.bucketName()).key(s3Path.getKey()).build());
@@ -289,7 +328,7 @@ public class S3FileSystemProvider extends FileSystemProvider {
    * Tests if two paths locate the same file. This method works in exactly the manner specified by
    * the {@link Files#isSameFile} method.
    *
-   * @param path one path to the file
+   * @param path1 one path to the file
    * @param path2 the other path
    * @return {@code true} if, and only if, the two paths locate the same file
    * @throws IOException if an I/O error occurs
@@ -298,8 +337,8 @@ public class S3FileSystemProvider extends FileSystemProvider {
    *         check read access to both files.
    */
   @Override
-  public boolean isSameFile(Path path, Path path2) throws IOException {
-    return path.toRealPath(NOFOLLOW_LINKS).equals(path2.toRealPath(NOFOLLOW_LINKS));
+  public boolean isSameFile(Path path1, Path path2) throws IOException {
+    return path1.toRealPath(NOFOLLOW_LINKS).equals(path2.toRealPath(NOFOLLOW_LINKS));
   }
 
   /**
@@ -313,11 +352,16 @@ public class S3FileSystemProvider extends FileSystemProvider {
    */
   @Override
   public void move(Path source, Path target, CopyOption... options) throws IOException {
+    if (options == null)
+      options = new CopyOption[0];
+    S3Path s3Source = requireNonNull(MorePaths.toS3Path(source));
+    S3Path s3Target = requireNonNull(MorePaths.toS3Path(target));
     if (asList(options).contains(StandardCopyOption.ATOMIC_MOVE)) {
-      throw new UnsupportedOperationException("S3 filesystem moves are not atomic");
+      throw new AtomicMoveNotSupportedException(s3Source.toString(), s3Target.toString(),
+          "S3 does not support atomic move operations");
     }
-    copy(source, target, options);
-    delete(source);
+    copy(s3Source, s3Target, options);
+    delete(s3Source);
   }
 
   @Override
@@ -341,25 +385,57 @@ public class S3FileSystemProvider extends FileSystemProvider {
 
   @Override
   public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
+    if (options == null || options.length == 0)
+      options = new OpenOption[] {StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+          StandardOpenOption.WRITE};
+
+    Set<OpenOption> optionsSet = new HashSet<>(asList(options));
+    if (optionsSet.contains(StandardOpenOption.APPEND)) {
+      throw new UnsupportedOperationException("S3 does not support APPEND option");
+    }
+    if (optionsSet.contains(StandardOpenOption.SYNC)) {
+      throw new UnsupportedOperationException("S3 does not support SYNC option");
+    }
+    if (optionsSet.contains(StandardOpenOption.DSYNC)) {
+      throw new UnsupportedOperationException("S3 does not support DSYNC option");
+    }
+    if (!optionsSet.contains(StandardOpenOption.WRITE)) {
+      throw new UnsupportedOperationException("S3 requires WRITE option");
+    }
+    if (!optionsSet.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
+      throw new UnsupportedOperationException("S3 requires TRUNCATE_EXISTING option");
+    }
+    boolean hasCreate = optionsSet.contains(StandardOpenOption.CREATE);
+    boolean hasCreateNew = optionsSet.contains(StandardOpenOption.CREATE_NEW);
+    boolean hasDeleteOnClose = optionsSet.contains(StandardOpenOption.DELETE_ON_CLOSE);
+
     S3Path s3Path = requireNonNull(MorePaths.toS3Path(path));
 
-    final Long maybeContentLength;
-    if (options != null) {
-      maybeContentLength = Arrays.stream(options).filter(o -> o instanceof FileLengthOpenOption)
-          .map(o -> (FileLengthOpenOption) o).map(FileLengthOpenOption::getLength).findFirst()
-          .orElse(null);
+    // TODO These checks are supposed to be atomic, but are not
+    if (hasCreateNew || !hasCreate) {
+      // If both CREATE_NEW and CREATE are given, then CREATE is ignored. This option requires that
+      // the file be created, so must not exist before the operation.
+      boolean exists = exists(s3Path);
+      if (hasCreateNew && exists) {
+        // We must create the file, but it already exists. That's a problem.
+        throw new FileAlreadyExistsException(s3Path.toString());
+      } else if (!hasCreateNew && !exists) {
+        // We are not allowed to create the file, but it doesn't exist. That's a problem.
+        // TODO Is this correct?
+        throw new NoSuchFileException(s3Path.toString());
+      }
     } else {
-      maybeContentLength = null;
+      // CREATE_NEW is not given, and CREATE is given. We are allowed to create the file, but are
+      // not required to. No check is needed.
     }
 
-    final String maybeContentType;
-    if (options != null) {
-      maybeContentType = Arrays.stream(options).filter(o -> o instanceof ContentTypeOpenOption)
-          .map(o -> (ContentTypeOpenOption) o).map(ContentTypeOpenOption::getContentType)
-          .findFirst().orElse(null);
-    } else {
-      maybeContentType = null;
-    }
+    final Long maybeContentLength = Arrays.stream(options)
+        .filter(o -> o instanceof FileLengthOpenOption).map(o -> (FileLengthOpenOption) o)
+        .map(FileLengthOpenOption::getLength).findFirst().orElse(null);
+
+    final String maybeContentType = Arrays.stream(options)
+        .filter(o -> o instanceof ContentTypeOpenOption).map(o -> (ContentTypeOpenOption) o)
+        .map(ContentTypeOpenOption::getContentType).findFirst().orElse(null);
 
     PipedInputStream in = new PipedInputStream();
     PipedOutputStream out = new PipedOutputStream();
@@ -370,7 +446,11 @@ public class S3FileSystemProvider extends FileSystemProvider {
     Runnable worker =
         newOutputStreamWriter(in, s3Path, maybeContentType, maybeContentLength, latch);
 
-    new Thread(worker).start();
+    try {
+      getExecutor().execute(worker);
+    } catch (RejectedExecutionException e) {
+      throw new IOException("Failed to start S3 writer", e);
+    }
 
     OutputStream result = new FilterOutputStream(out) {
       @Override
@@ -425,6 +505,8 @@ public class S3FileSystemProvider extends FileSystemProvider {
   public DirectoryStream<Path> newDirectoryStream(Path path, Filter<? super Path> filter)
       throws IOException {
     S3Path s3Path = requireNonNull(MorePaths.toS3Path(path));
+    if (!s3Path.isDirectory())
+      throw new NotDirectoryException(s3Path.toString());
     return new S3DirectoryStream(s3Path, filter);
   }
 
@@ -459,7 +541,7 @@ public class S3FileSystemProvider extends FileSystemProvider {
     S3BasicFileAttributes attrs = readAttributes(path, S3BasicFileAttributes.class, options);
 
     if (attrs.isDirectory()) {
-      return Collections.emptyMap();
+      return emptyMap();
     }
 
     Map<String, Object> result = new HashMap<>();
@@ -518,6 +600,22 @@ public class S3FileSystemProvider extends FileSystemProvider {
     }
 
     return (A) getFileAttributeView(path, S3BasicFileAttributeView.class, options).readAttributes();
+  }
+
+  @Override
+  public Path readSymbolicLink(Path link) throws IOException {
+    throw new UnsupportedOperationException("S3 does not support symbolic links");
+  }
+
+  @Override
+  public void createLink(Path link, Path existing) throws IOException {
+    throw new UnsupportedOperationException("S3 does not support links");
+  }
+
+  @Override
+  public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attrs)
+      throws IOException {
+    throw new UnsupportedOperationException("S3 does not support symbolic links");
   }
 
   /**

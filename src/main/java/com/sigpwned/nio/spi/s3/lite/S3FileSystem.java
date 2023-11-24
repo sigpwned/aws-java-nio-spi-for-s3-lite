@@ -4,6 +4,7 @@ import static java.util.Collections.emptyList;
 import static java.util.Objects.requireNonNull;
 import java.io.Closeable;
 import java.io.IOException;
+import java.nio.file.ClosedFileSystemException;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
@@ -64,27 +65,37 @@ public class S3FileSystem extends FileSystem {
 
   @Override
   public Iterable<FileStore> getFileStores() {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     return emptyList();
   }
 
   @Override
   public S3Path getPath(String first, String... more) {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     return S3Path.getPath(this, first, more);
   }
 
   @Override
   public PathMatcher getPathMatcher(String syntaxAndPattern) {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     // TODO this assumes the underlying platform's filesystem is POSIX-like
     return FileSystems.getDefault().getPathMatcher(syntaxAndPattern);
   }
 
   @Override
   public Iterable<Path> getRootDirectories() {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     return Collections.singleton(S3Path.getPath(this, "/"));
   }
 
   @Override
   public String getSeparator() {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     return S3FileSystemProvider.SEPARATOR;
   }
 
@@ -95,11 +106,15 @@ public class S3FileSystem extends FileSystem {
 
   @Override
   public boolean isReadOnly() {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     return false;
   }
 
   @Override
   public S3FileSystemProvider provider() {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     return provider;
   }
 
@@ -113,28 +128,34 @@ public class S3FileSystem extends FileSystem {
 
   @Override
   public Set<String> supportedFileAttributeViews() {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     return SUPPORTED_FILE_ATTRIBUTE_VIEWS;
   }
 
   @Override
   public UserPrincipalLookupService getUserPrincipalLookupService() {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     throw new UnsupportedOperationException();
   }
 
   @Override
   public WatchService newWatchService() throws IOException {
+    if (!isOpen())
+      throw new ClosedFileSystemException();
     throw new UnsupportedOperationException();
   }
 
-  /* default */ void registerCloseable(Closeable openCloseable) {
+  /* default */ void registerCloseable(Closeable closeable) {
     synchronized (closeables) {
-      closeables.add(openCloseable);
+      closeables.add(closeable);
     }
   }
 
-  /* default */ void deregisterCloseable(Closeable openCloseable) {
+  /* default */ void deregisterCloseable(Closeable closeable) {
     synchronized (closeables) {
-      closeables.remove(openCloseable);
+      closeables.remove(closeable);
     }
   }
 
