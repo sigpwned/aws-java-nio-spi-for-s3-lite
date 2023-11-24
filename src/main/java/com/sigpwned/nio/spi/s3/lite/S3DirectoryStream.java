@@ -29,6 +29,8 @@ class S3DirectoryStream implements DirectoryStream<Path> {
     final String bucketName = path.bucketName();
     final String key = path.getKey();
 
+    open = true;
+
     iterator =
         fileSystem.getClient()
             .listObjectsV2Paginator(ListObjectsV2Request

@@ -1,6 +1,8 @@
 package com.sigpwned.nio.spi.s3.lite;
 
 import static java.lang.String.format;
+import static java.util.Arrays.asList;
+import static java.util.stream.Collectors.toSet;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import java.io.IOException;
@@ -9,7 +11,11 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.stream.Stream;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -132,6 +138,40 @@ public class S3FileSystemProviderTest {
     }
 
     assertThat(text, is(contents));
+  }
+
+
+  @Test
+  public void listTest() throws IOException {
+    final String bucketName = "example";
+    final String directoryName = "alpha";
+    final String fileName1 = "hello.txt";
+    final String fileName2 = "world.txt";
+
+    client.createBucket(CreateBucketRequest.builder().bucket(bucketName).build());
+
+    client.putObject(
+        PutObjectRequest.builder().bucket(bucketName)
+            .key(directoryName + S3FileSystemProvider.SEPARATOR + fileName1).build(),
+        RequestBody.fromString(fileName1, StandardCharsets.UTF_8));
+
+    client.putObject(
+        PutObjectRequest.builder().bucket(bucketName)
+            .key(directoryName + S3FileSystemProvider.SEPARATOR + fileName2).build(),
+        RequestBody.fromString(fileName2, StandardCharsets.UTF_8));
+
+    Set<Path> contents;
+    try (Stream<Path> dirstream = Files.list(Paths.get(URI
+        .create(format("%s://%s/%s/", S3FileSystemProvider.SCHEME, bucketName, directoryName))))) {
+      contents = dirstream.collect(toSet());
+    }
+
+    assertThat(contents,
+        is(new HashSet<>(asList(
+            Paths.get(URI.create(format("%s://%s/%s/%s", S3FileSystemProvider.SCHEME, bucketName,
+                directoryName, fileName1))),
+            Paths.get(URI.create(format("%s://%s/%s/%s", S3FileSystemProvider.SCHEME, bucketName,
+                directoryName, fileName2)))))));
   }
 
   @Test(expected = NoSuchKeyException.class)
