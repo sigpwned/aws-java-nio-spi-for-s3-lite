@@ -55,7 +55,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
-import com.sigpwned.aws.sdk.lite.core.credentials.provider.DefaultAwsCredentialsProviderChain;
+import com.sigpwned.aws.sdk.lite.core.auth.credentials.provider.DefaultAwsCredentialsProviderChain;
 import com.sigpwned.aws.sdk.lite.core.io.RequestBody;
 import com.sigpwned.aws.sdk.lite.core.util.AwsRegions;
 import com.sigpwned.aws.sdk.lite.s3.S3Client;
@@ -79,7 +79,7 @@ import com.sigpwned.nio.spi.s3.lite.util.MorePaths;
 import com.sigpwned.nio.spi.s3.lite.util.S3FileSystemInfo;
 
 public class S3FileSystemProvider extends FileSystemProvider {
-  private static final AtomicReference<Supplier<S3ClientBuilder<?>>> defaultClientBuilderSupplierReference =
+  private static final AtomicReference<Supplier<S3ClientBuilder>> defaultClientBuilderSupplierReference =
       new AtomicReference<>(() -> {
         return S3Client.builder().credentialsProvider(new DefaultAwsCredentialsProviderChain())
             .region(AwsRegions.US_EAST_1);
@@ -113,7 +113,7 @@ public class S3FileSystemProvider extends FileSystemProvider {
    * Test hook
    */
   /* default */ static void setDefaultClientBuilderSupplier(
-      Supplier<S3ClientBuilder<?>> clientBuilderSupplier) {
+      Supplier<S3ClientBuilder> clientBuilderSupplier) {
     if (clientBuilderSupplier == null)
       throw new NullPointerException();
     S3Client newDefaultClient = clientBuilderSupplier.get().build();
@@ -122,7 +122,7 @@ public class S3FileSystemProvider extends FileSystemProvider {
     FS_CACHE.clear();
   }
 
-  private static S3ClientBuilder<?> defaultClientBuilder() {
+  private static S3ClientBuilder defaultClientBuilder() {
     return defaultClientBuilderSupplierReference.get().get();
   }
 

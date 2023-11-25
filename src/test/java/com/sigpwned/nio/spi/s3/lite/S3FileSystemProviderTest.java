@@ -23,8 +23,8 @@ import org.junit.Test;
 import org.testcontainers.containers.localstack.LocalStackContainer;
 import org.testcontainers.utility.DockerImageName;
 import com.sigpwned.aws.sdk.lite.core.Endpoint;
-import com.sigpwned.aws.sdk.lite.core.credentials.AwsBasicCredentials;
-import com.sigpwned.aws.sdk.lite.core.credentials.AwsCredentials;
+import com.sigpwned.aws.sdk.lite.core.auth.AwsCredentials;
+import com.sigpwned.aws.sdk.lite.core.auth.credentials.AwsBasicCredentials;
 import com.sigpwned.aws.sdk.lite.core.io.RequestBody;
 import com.sigpwned.aws.sdk.lite.s3.S3Client;
 import com.sigpwned.aws.sdk.lite.s3.S3ClientBuilder;
@@ -50,7 +50,7 @@ public class S3FileSystemProviderTest {
         AwsBasicCredentials.of(localstack.getAccessKey(), localstack.getSecretKey());
     final String region = localstack.getRegion();
 
-    final S3ClientBuilder<?> defaultS3ClientBuilder =
+    final S3ClientBuilder defaultS3ClientBuilder =
         S3Client.builder().credentialsProvider(() -> credentials).region(region)
             .endpointProvider((endpointParams) -> Endpoint.builder().url(endpoint).build());
 
