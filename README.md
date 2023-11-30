@@ -21,19 +21,21 @@ For example, this code would print the contents of a text file stored in S3 to `
 
 Assuming this library is added to a project properly, this code will automatically load the `S3FileSystemProvider`, then use AWS credentials embedded in the environment (e.g., environment variables, system properties, etc.) to communicate with the S3 API and retrieve the named object's content as an `InputStream`.
 
-## Why would I use this library?
+## Why should I use this library?
 
 Note that the only reference to S3 in the above code is in a URI scheme. In particular, this code makes no direct references to any classes in this library, the AWS Java SDK, etc. This transparency is enormously helpful in building implementations that can read data from disk at test time and S3 at production time, and so on. The library allows you to decouple fetching data from processing data and focus on building business logic without worrying about whether the data is coming from local files or S3.
 
 ## Why not use `awslabs/aws-java-nio-spi-for-s3`?
 
-The [awslabs/aws-java-nio-spi-for-s3](https://github.com/awslabs/aws-java-nio-spi-for-s3) library is outstanding, and the basis and inspiration for this library. If you're happily using this library, then you should keep using it!
+The [awslabs/aws-java-nio-spi-for-s3](https://github.com/awslabs/aws-java-nio-spi-for-s3) library is outstanding, and is the basis of and inspiration for this library. If you're happily using this library, then you should keep using it!
 
 However, that library requires a surprising amount of space in an über JAR. A simple cross-platform application that depends on `software.amazon.nio.s3:aws-java-nio-spi-for-s3:1.2.4` and is packaged with the Maven Shade Plugin with `<minimizeJar>true</minimizeJar>` results in a 20MB compressed / 53MB uncompressed über JAR. Specializing the application to one platform (e.g., macos-aarch64) can get the size down to 10MB compressed / 27MB uncompressed. For containerized applications, this may not be a big deal, but for other deployments like Lambda functions with hard size limits, that's a lot of space to sacrifice just to make S3 access transparent!
 
 This implementation uses several techniques to minimize dependencies and size, including using [a custom, lightweight AWS Java Client](https://github.com/sigpwned/aws-java-sdk-lite), to minimize JAR size. The same cross-platform application compiled with `com.sigpwned:aws-java-nio-spi-for-s3-lite:0.0.0-b0` is 407K compressed / 945K uncompressed.
 
 If executable size matters to your application, then this implementation offers important advantages over `awslabs/aws-java-nio-spi-for-s3`.
+
+However, if your application requires more sophisticated NIO features, such as asynchronous I/O, then you should use [awslabs/aws-java-nio-spi-for-s3](https://github.com/awslabs/aws-java-nio-spi-for-s3).
 
 ## Caveats
 
