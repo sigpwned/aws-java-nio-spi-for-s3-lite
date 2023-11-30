@@ -1,10 +1,15 @@
 package com.sigpwned.nio.spi.s3.lite;
 
+import static java.lang.String.format;
 import static java.nio.file.LinkOption.NOFOLLOW_LINKS;
 import static java.util.Arrays.asList;
 import static java.util.Collections.emptyMap;
+import static java.util.Collections.singletonList;
+import static java.util.Collections.unmodifiableList;
 import static java.util.Collections.unmodifiableMap;
+import static java.util.Collections.unmodifiableSet;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 import java.io.FilterInputStream;
 import java.io.FilterOutputStream;
@@ -40,9 +45,12 @@ import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -76,7 +84,7 @@ import com.sigpwned.nio.spi.s3.lite.options.ContentTypeOpenOption;
 import com.sigpwned.nio.spi.s3.lite.options.FileLengthOpenOption;
 import com.sigpwned.nio.spi.s3.lite.util.Buckets;
 import com.sigpwned.nio.spi.s3.lite.util.MorePaths;
-import com.sigpwned.nio.spi.s3.lite.util.S3FileSystemInfo;
+import com.sigpwned.nio.spi.s3.lite.util.S3Uri;
 
 public class S3FileSystemProvider extends FileSystemProvider {
   private static final AtomicReference<Supplier<S3ClientBuilder>> defaultClientBuilderSupplierReference =
@@ -293,17 +301,17 @@ public class S3FileSystemProvider extends FileSystemProvider {
    *         permission.
    */
   S3FileSystem getFileSystem(URI uri, boolean create) {
-    S3FileSystemInfo info = S3FileSystemInfo.fromUri(uri);
-    return FS_CACHE.computeIfAbsent(info.key(), (key) -> {
+    S3Uri s3uri = S3Uri.fromUri(uri);
+    return FS_CACHE.computeIfAbsent(s3uri.getId(), (id) -> {
       if (!create) {
         throw new FileSystemNotFoundException(uri.toString());
       }
 
-      String region = Buckets.getBucketRegion(getDefaultClient(), info.bucket());
+      String region = Buckets.getBucketRegion(getDefaultClient(), s3uri.getBucket());
 
       S3Client client = defaultClientBuilder().region(region).build();
 
-      return new S3FileSystem(this, client, info.bucket());
+      return new S3FileSystem(this, client, s3uri.getBucket());
     });
   }
 
@@ -364,8 +372,21 @@ public class S3FileSystemProvider extends FileSystemProvider {
     delete(s3Source);
   }
 
+  private static final List<OpenOption> UNSUPPORTED_READ_OPTIONS = unmodifiableList(
+      asList(StandardOpenOption.APPEND, StandardOpenOption.CREATE, StandardOpenOption.CREATE_NEW,
+          StandardOpenOption.SYNC, StandardOpenOption.DSYNC, StandardOpenOption.DELETE_ON_CLOSE,
+          StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING));
+
+  private static final List<OpenOption> REQUIRED_READ_OPTIONS =
+      singletonList(StandardOpenOption.READ);
+
   @Override
   public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
+    @SuppressWarnings("unused")
+    Set<OpenOption> openOptions = checkOptions(
+        Optional.ofNullable(options).filter(os -> os.length > 0)
+            .orElseGet(() -> new OpenOption[] {StandardOpenOption.READ}),
+        UNSUPPORTED_READ_OPTIONS, REQUIRED_READ_OPTIONS);
     S3Path s3Path = requireNonNull(MorePaths.toS3Path(path));
     InputStream in = s3Path.getFileSystem().getClient().getObject(
         GetObjectRequest.builder().bucket(s3Path.bucketName()).key(s3Path.getKey()).build());
@@ -383,31 +404,22 @@ public class S3FileSystemProvider extends FileSystemProvider {
     return result;
   }
 
+  private static final List<OpenOption> UNSUPPORTED_WRITE_OPTIONS =
+      unmodifiableList(asList(StandardOpenOption.APPEND, StandardOpenOption.SYNC,
+          StandardOpenOption.DSYNC, StandardOpenOption.DELETE_ON_CLOSE, StandardOpenOption.READ));
+
+  private static final List<OpenOption> REQUIRED_WRITE_OPTIONS =
+      unmodifiableList(asList(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING));
+
   @Override
   public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-    if (options == null || options.length == 0)
-      options = new OpenOption[] {StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-          StandardOpenOption.WRITE};
-
-    Set<OpenOption> optionsSet = new HashSet<>(asList(options));
-    if (optionsSet.contains(StandardOpenOption.APPEND)) {
-      throw new UnsupportedOperationException("S3 does not support APPEND option");
-    }
-    if (optionsSet.contains(StandardOpenOption.SYNC)) {
-      throw new UnsupportedOperationException("S3 does not support SYNC option");
-    }
-    if (optionsSet.contains(StandardOpenOption.DSYNC)) {
-      throw new UnsupportedOperationException("S3 does not support DSYNC option");
-    }
-    if (!optionsSet.contains(StandardOpenOption.WRITE)) {
-      throw new UnsupportedOperationException("S3 requires WRITE option");
-    }
-    if (!optionsSet.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
-      throw new UnsupportedOperationException("S3 requires TRUNCATE_EXISTING option");
-    }
+    Set<OpenOption> optionsSet = checkOptions(
+        Optional.ofNullable(options).filter(os -> os.length > 0)
+            .orElseGet(() -> new OpenOption[] {StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                StandardOpenOption.TRUNCATE_EXISTING}),
+        UNSUPPORTED_WRITE_OPTIONS, REQUIRED_WRITE_OPTIONS);
     boolean hasCreate = optionsSet.contains(StandardOpenOption.CREATE);
     boolean hasCreateNew = optionsSet.contains(StandardOpenOption.CREATE_NEW);
-    boolean hasDeleteOnClose = optionsSet.contains(StandardOpenOption.DELETE_ON_CLOSE);
 
     S3Path s3Path = requireNonNull(MorePaths.toS3Path(path));
 
@@ -472,6 +484,31 @@ public class S3FileSystemProvider extends FileSystemProvider {
     s3Path.getFileSystem().registerCloseable(result);
 
     return result;
+  }
+
+  private static <T> Set<T> checkOptions(T[] options, Collection<T> unsupportedOptions,
+      Collection<T> requiredOptions) {
+    Set<T> result = new HashSet<>(asList(options));
+
+    if (unsupportedOptions != null && !unsupportedOptions.isEmpty()) {
+      List<T> unsupportedOperationsGiven =
+          result.stream().filter(o -> unsupportedOptions.contains(o)).collect(toList());
+      if (!unsupportedOperationsGiven.isEmpty()) {
+        throw new IllegalArgumentException(
+            format("S3 operation does not support options %s", unsupportedOperationsGiven));
+      }
+    }
+
+    if (requiredOptions != null && !requiredOptions.isEmpty()) {
+      List<T> requiredOptionsMissing =
+          requiredOptions.stream().filter(o -> !result.contains(o)).collect(toList());
+      if (!requiredOptionsMissing.isEmpty()) {
+        throw new IllegalArgumentException(
+            format("S3 operation missing required options %s", requiredOptionsMissing));
+      }
+    }
+
+    return unmodifiableSet(result);
   }
 
   // TODO We now buffer in the bean mapper. What should we do here?
