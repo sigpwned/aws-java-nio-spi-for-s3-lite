@@ -441,11 +441,11 @@ public class S3FileSystemProvider extends FileSystemProvider {
       // not required to. No check is needed.
     }
 
-    final Long maybeContentLength = Arrays.stream(options)
+    final Long maybeContentLength = optionsSet.stream()
         .filter(o -> o instanceof FileLengthOpenOption).map(o -> (FileLengthOpenOption) o)
         .map(FileLengthOpenOption::getLength).findFirst().orElse(null);
 
-    final String maybeContentType = Arrays.stream(options)
+    final String maybeContentType = optionsSet.stream()
         .filter(o -> o instanceof ContentTypeOpenOption).map(o -> (ContentTypeOpenOption) o)
         .map(ContentTypeOpenOption::getContentType).findFirst().orElse(null);
 
