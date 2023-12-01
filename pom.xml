@@ -2,7 +2,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.sigpwned</groupId>
     <artifactId>aws-java-nio-spi-for-s3-lite</artifactId>
-    <version>0.0.0-b1-SNAPSHOT</version>
+    <version>0.0.0-b1</version>
     <packaging>jar</packaging>
     <name>AWS Java NIO SPI for S3 Lite</name>
     <description>
@@ -24,7 +24,7 @@
             scm:git:ssh://git@github.com/sigpwned/aws-java-nio-spi-for-s3-lite.git
         </developerConnection>
         <url>https://github.com/sigpwned/aws-java-nio-spi-for-s3-lite/tree/main</url>
-      <tag>HEAD</tag>
+      <tag>v0.0.0-b1</tag>
   </scm>
     <licenses>
         <license>
