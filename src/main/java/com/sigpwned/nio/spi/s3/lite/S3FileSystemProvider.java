@@ -82,7 +82,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
-import com.sigpwned.aws.sdk.lite.core.auth.credentials.provider.DefaultAwsCredentialsProviderChain;
+import com.sigpwned.aws.sdk.lite.core.auth.credentials.provider.chain.DefaultAwsCredentialsProviderChain;
 import com.sigpwned.aws.sdk.lite.core.io.RequestBody;
 import com.sigpwned.aws.sdk.lite.core.util.AwsRegions;
 import com.sigpwned.aws.sdk.lite.s3.S3Client;
