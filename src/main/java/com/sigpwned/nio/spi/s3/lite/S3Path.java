@@ -7,9 +7,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,6 +17,7 @@
  * limitations under the License.
  * ==================================LICENSE_END===================================
  */
+
 /*
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. SPDX-License-Identifier:
  * Apache-2.0
@@ -46,7 +47,7 @@ import com.sigpwned.nio.spi.s3.lite.util.MorePaths;
 import com.sigpwned.nio.spi.s3.lite.util.UrlEncoding;
 
 /**
- * Borrowed with love from awslabs/aws-java-nio-spi-for-s3.
+ * Borrowed with love from awslabs/aws-java-nio-spi-for-s3. Acceptable per Apache license.
  */
 public class S3Path implements Path {
   private static final String PATH_SEPARATOR = S3FileSystemProvider.SEPARATOR;
@@ -900,6 +901,7 @@ public class S3Path implements Path {
   }
 
   private final class S3PathIterator implements Iterator<Path> {
+    @SuppressWarnings("unused")
     final boolean isAbsolute;
     final boolean hasTrailingSeparator;
     boolean first;

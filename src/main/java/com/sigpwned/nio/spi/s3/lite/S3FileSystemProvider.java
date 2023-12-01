@@ -7,9 +7,9 @@
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -133,7 +133,6 @@ public class S3FileSystemProvider extends FileSystemProvider {
     return executorReference.get();
   }
 
-  // TODO We should probably synchronize this
   private static final Map<String, S3FileSystem> FS_CACHE = new HashMap<>();
 
   /**
@@ -146,7 +145,9 @@ public class S3FileSystemProvider extends FileSystemProvider {
     S3Client newDefaultClient = clientBuilderSupplier.get().build();
     defaultClientBuilderSupplierReference.set(clientBuilderSupplier);
     defaultClientReference.set(newDefaultClient);
-    FS_CACHE.clear();
+    synchronized (FS_CACHE) {
+      FS_CACHE.clear();
+    }
   }
 
   private static S3ClientBuilder defaultClientBuilder() {
@@ -321,17 +322,34 @@ public class S3FileSystemProvider extends FileSystemProvider {
    */
   S3FileSystem getFileSystem(URI uri, boolean create) {
     S3Uri s3uri = S3Uri.fromUri(uri);
-    return FS_CACHE.computeIfAbsent(s3uri.getId(), (id) -> {
-      if (!create) {
-        throw new FileSystemNotFoundException(uri.toString());
+
+    S3FileSystem result;
+    synchronized (FS_CACHE) {
+      result = FS_CACHE.get(s3uri.getId());
+    }
+
+    if (result != null) {
+      return result;
+    }
+
+    if (!create) {
+      throw new FileSystemNotFoundException(uri.toString());
+    }
+
+    String region = Buckets.getBucketRegion(getDefaultClient(), s3uri.getBucket());
+
+    S3Client client = defaultClientBuilder().region(region).build();
+
+    S3FileSystem newFileSystem = new S3FileSystem(this, client, s3uri.getBucket());
+
+    synchronized (FS_CACHE) {
+      result = FS_CACHE.get(s3uri.getId());
+      if (result == null) {
+        FS_CACHE.put(s3uri.getId(), result = newFileSystem);
       }
+    }
 
-      String region = Buckets.getBucketRegion(getDefaultClient(), s3uri.getBucket());
-
-      S3Client client = defaultClientBuilder().region(region).build();
-
-      return new S3FileSystem(this, client, s3uri.getBucket());
-    });
+    return result;
   }
 
   @Override
